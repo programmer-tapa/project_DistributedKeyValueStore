@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kvraft-1-service
+  namespace: dkv
+  labels:
+    app: kvraft-1
+spec:
+  clusterIP: None  # Headless Service for stable DNS
+  ports:
+    - port: 8000
+      name: dkv-port
+      targetPort: 8000
+    - port: 9091
+      name: metrics-port
+      targetPort: 9091
+  selector:
+    app: kvraft-1
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kvraft-1
+  namespace: dkv
+  labels:
+    app: kvraft-1
+spec:
+  serviceName: kvraft-1-service
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kvraft-1
+  template:
+    metadata:
+      labels:
+        app: kvraft-1
+    spec:
+      affinity:
+        # Guarantee zone-level redundancy by spreading pods across zones
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - kvraft-1
+              topologyKey: "topology.kubernetes.io/zone"
+      containers:
+        - name: kvraft-1
+          image: us-central1-docker.pkg.dev/project-1227447b-a30c-4990-bb3/dkv-repo/kvraftd:latest
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              POD_INDEX=$(hostname | awk -F'-' '{print $NF}')
+              echo "Starting Shard Group 1 Replica ID: ${POD_INDEX}"
+              exec /usr/local/bin/server \
+                --me "${POD_INDEX}" \
+                --peers "kvraft-1-0.kvraft-1-service.dkv.svc.cluster.local:8000,kvraft-1-1.kvraft-1-service.dkv.svc.cluster.local:8000,kvraft-1-2.kvraft-1-service.dkv.svc.cluster.local:8000" \
+                --gid "1" \
+                --persist-dir "/var/lib/raft" \
+                --metrics-addr ":9091"
+          ports:
+            - containerPort: 8000
+              name: dkv-port
+            - containerPort: 9091
+              name: metrics-port
+          volumeMounts:
+            - name: raft-state
+              mountPath: /var/lib/raft
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+  volumeClaimTemplates:
+    - metadata:
+        name: raft-state
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: premium-rwo  # High-performance SSD on GCP GKE
+        resources:
+          requests:
+            storage: 10Gi

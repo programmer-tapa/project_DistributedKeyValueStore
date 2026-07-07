@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  # Testing overrides for chaos injection and network partition testing
+  kvraft-0:
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - CHAOS_ENABLED=true
+
+  kvraft-1:
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - CHAOS_ENABLED=true
+
+  kvraft-2:
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - CHAOS_ENABLED=true

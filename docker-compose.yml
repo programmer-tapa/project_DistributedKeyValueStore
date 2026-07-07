@@ -1,0 +1,125 @@
+version: "3.9"
+
+networks:
+  kvnet:
+    name: docker_kvnet
+    driver: bridge
+
+# ── Shared Raft node config ──────────────────────────────────────────
+x-raft-common: &raft-common
+  build:
+    context: ./DistributedKeyValueStore
+    dockerfile: deployments/docker/Dockerfile
+    args:
+      BUILD_TARGET: kvraftd
+  networks: [kvnet]
+  restart: on-failure
+
+services:
+
+  # ── Lab 2: Single-node KV (config store for ShardCtrler) ───────────
+  kvsrv:
+    build:
+      context: ./DistributedKeyValueStore
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        BUILD_TARGET: kvsrvd
+    container_name: dkv-kvsrv
+    networks: [kvnet]
+    ports:
+      - "9000:9000"
+    command: ["--addr", ":9000", "--metrics-addr", ":9091"]
+
+  # ── Shard Group 1: 3-node Raft cluster ─────────────────────────────
+  kvraft-0:
+    <<: *raft-common
+    container_name: dkv-kvraft-0
+    command: ["--me", "0", "--peers", "kvraft-0:8000,kvraft-1:8000,kvraft-2:8000", "--gid", "1", "--persist-dir", "/var/lib/raft", "--metrics-addr", ":9091"]
+    ports: ["8000:8000"]
+    volumes:
+      - dkv-kvraft0-data:/var/lib/raft
+
+  kvraft-1:
+    <<: *raft-common
+    container_name: dkv-kvraft-1
+    command: ["--me", "1", "--peers", "kvraft-0:8000,kvraft-1:8000,kvraft-2:8000", "--gid", "1", "--persist-dir", "/var/lib/raft", "--metrics-addr", ":9091"]
+    ports: ["8001:8000"]
+    volumes:
+      - dkv-kvraft1-data:/var/lib/raft
+
+  kvraft-2:
+    <<: *raft-common
+    container_name: dkv-kvraft-2
+    command: ["--me", "2", "--peers", "kvraft-0:8000,kvraft-1:8000,kvraft-2:8000", "--gid", "1", "--persist-dir", "/var/lib/raft", "--metrics-addr", ":9091"]
+    ports: ["8002:8000"]
+    volumes:
+      - dkv-kvraft2-data:/var/lib/raft
+
+  # ── Shard Group 2: 3-node Raft cluster ─────────────────────────────
+  shardgrp2-0:
+    <<: *raft-common
+    container_name: dkv-shardgrp2-0
+    command: ["--me", "0", "--peers", "shardgrp2-0:8010,shardgrp2-1:8010,shardgrp2-2:8010", "--gid", "2", "--persist-dir", "/var/lib/raft", "--metrics-addr", ":9091"]
+    ports: ["8010:8010"]
+    volumes:
+      - dkv-shardgrp2-0-data:/var/lib/raft
+
+  shardgrp2-1:
+    <<: *raft-common
+    container_name: dkv-shardgrp2-1
+    command: ["--me", "1", "--peers", "shardgrp2-0:8010,shardgrp2-1:8010,shardgrp2-2:8010", "--gid", "2", "--persist-dir", "/var/lib/raft", "--metrics-addr", ":9091"]
+    ports: ["8011:8010"]
+    volumes:
+      - dkv-shardgrp2-1-data:/var/lib/raft
+
+  shardgrp2-2:
+    <<: *raft-common
+    container_name: dkv-shardgrp2-2
+    command: ["--me", "2", "--peers", "shardgrp2-0:8010,shardgrp2-1:8010,shardgrp2-2:8010", "--gid", "2", "--persist-dir", "/var/lib/raft", "--metrics-addr", ":9091"]
+    ports: ["8012:8010"]
+    volumes:
+      - dkv-shardgrp2-2-data:/var/lib/raft
+
+  # ── Shard Controller ───────────────────────────────────────────────
+  shardctrler:
+    build:
+      context: ./DistributedKeyValueStore
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        BUILD_TARGET: shardctrlrd
+    container_name: dkv-shardctrler
+    networks: [kvnet]
+    depends_on: [kvsrv, kvraft-0, shardgrp2-0]
+    command: ["--kvsrv-addr", "kvsrv:9000", "--groups", "1=kvraft-0:8000,kvraft-1:8000,kvraft-2:8000;2=shardgrp2-0:8010,shardgrp2-1:8010,shardgrp2-2:8010", "--metrics-addr", ":9091"]
+    ports: ["9100:9100"]
+
+  # ── Observability: Prometheus ──────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: dkv-prometheus
+    networks: [kvnet]
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on: [kvraft-0, shardgrp2-0]
+
+  # ── Observability: Grafana ─────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: dkv-grafana
+    networks: [kvnet]
+    ports: ["3003:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - dkv-grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+
+volumes:
+  dkv-kvraft0-data:
+  dkv-kvraft1-data:
+  dkv-kvraft2-data:
+  dkv-shardgrp2-0-data:
+  dkv-shardgrp2-1-data:
+  dkv-shardgrp2-2-data:
+  dkv-grafana-data:

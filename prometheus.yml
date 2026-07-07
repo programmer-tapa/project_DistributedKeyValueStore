@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "kvsrv"
+    static_configs:
+      - targets: ["kvsrv:9091"]
+
+  - job_name: "shardgrp1"
+    static_configs:
+      - targets: ["kvraft-0:9091", "kvraft-1:9091", "kvraft-2:9091"]
+
+  - job_name: "shardgrp2"
+    static_configs:
+      - targets: ["shardgrp2-0:9091", "shardgrp2-1:9091", "shardgrp2-2:9091"]
+
+  - job_name: "shardctrler"
+    static_configs:
+      - targets: ["shardctrler:9091"]

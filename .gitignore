@@ -1,0 +1,33 @@
+# Go binaries & build artifacts
+bin/
+DistributedKeyValueStore/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE and Editor configurations
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Docker Compose local volumes or temporary configs (if any)
+.env
+
+# Python build/cache artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+

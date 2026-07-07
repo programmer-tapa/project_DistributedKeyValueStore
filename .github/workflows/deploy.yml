@@ -1,0 +1,110 @@
+name: DKV CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PROJECT_ID: "project-1227447b-a30c-4990-bb3"
+  REGISTRY_REGION: "us-central1"
+  REPOSITORY_NAME: "dkv-repo"
+  GKE_CLUSTER_NAME: "dkv-cluster"
+  GKE_REGION: "us-central1"
+
+jobs:
+  # ==============================================================================
+  # STAGE 1: Continuous Integration (CI) - Verification & Testing
+  # ==============================================================================
+  test:
+    name: Run Tests & Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Run Code Linter
+        run: |
+          go fmt ./...
+          go vet ./...
+
+      - name: Run Raft & Shard Consensus Tests
+        run: |
+          cd DistributedKeyValueStore
+          go test -race -v ./...
+
+  # ==============================================================================
+  # STAGE 2: Continuous Deployment (CD) - Build, Push, and Rolling Deploy
+  # ==============================================================================
+  deploy:
+    name: Build & Deploy to GKE
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write' # Required for Workload Identity Federation OIDC authentication
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. Authenticate with Google Cloud using secure OIDC Workload Identity Federation
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/1234567890/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'github-actions-sa@project-1227447b-a30c-4990-bb3.iam.gserviceaccount.com'
+
+      # 2. Authenticate Docker with GCP Artifact Registry
+      - name: Configure Docker authentication
+        run: |
+          gcloud auth configure-docker ${{ env.REGISTRY_REGION }}-docker.pkg.dev --quiet
+
+      # 3. Set up Docker Buildx for BuildKit support
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 4. Build and Push the 3 Core Binaries using BuildKit layer caching
+      - name: Build and Push Core Images
+        uses: docker/build-push-action@v5
+        with:
+          context: ./DistributedKeyValueStore
+          file: ./DistributedKeyValueStore/deployments/docker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_NAME }}/kvsrvd:latest
+            ${{ env.REGISTRY_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_NAME }}/kvraftd:latest
+            ${{ env.REGISTRY_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY_NAME }}/shardctrlrd:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 5. Connect to the GKE Autopilot Cluster
+      - name: Set up GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER_NAME }}
+          location: ${{ env.GKE_REGION }}
+
+      # 6. Apply Manifests & Perform Zero-Downtime Rolling Restarts
+      - name: Deploy to GKE Cluster
+        run: |
+          # Apply the namespace and core manifests
+          kubectl apply -f DistributedKeyValueStore/deployments/kubernetes/namespace.yaml
+          kubectl apply -f DistributedKeyValueStore/deployments/kubernetes/
+          
+          # Force GKE to pull the fresh 'latest' images via rolling restarts
+          kubectl rollout restart -n dkv deployment/shardctrlr
+          kubectl rollout restart -n dkv statefulset/kvraft-1
+          kubectl rollout restart -n dkv statefulset/kvraft-2
+          kubectl rollout restart -n dkv statefulset/metadata-store
+          
+          # Wait and verify that the deployments complete successfully
+          kubectl rollout status -n dkv deployment/shardctrlr --timeout=120s
